@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube Subscriber Leaderboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
@@ -41,6 +42,28 @@
             0% { background-position: -200% 0; }
             100% { background-position: 200% 0; }
         }
+
+        .progress-bar {
+            animation: progress-fill 0.8s ease-out;
+        }
+        
+        @keyframes progress-fill {
+            from { width: 0%; }
+        }
+
+        .chart-container {
+            position: relative;
+            height: 120px;
+            width: 100%;
+        }
+
+        .video-thumbnail {
+            transition: transform 0.2s ease;
+        }
+
+        .video-thumbnail:hover {
+            transform: scale(1.05);
+        }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -63,12 +86,17 @@
                 <div id="lastUpdated" class="text-gray-600 text-sm"></div>
             </div>
             
-            <div class="flex items-center gap-2">
-                <span class="text-sm text-gray-600">Auto-refresh:</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" id="autoRefresh" class="sr-only peer" checked>
-                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                </label>
+            <div class="flex items-center gap-4">
+                <button id="clearHistoryBtn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-medium transition-colors text-sm">
+                    🗑️ Clear History
+                </button>
+                <div class="flex items-center gap-2">
+                    <span class="text-sm text-gray-600">Auto-refresh:</span>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="autoRefresh" class="sr-only peer" checked>
+                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                </div>
             </div>
         </div>
 
@@ -83,7 +111,7 @@
         </div>
 
         <!-- Leaderboard -->
-        <div id="leaderboard" class="space-y-4">
+        <div id="leaderboard" class="space-y-6">
             <!-- Loading state will be inserted here -->
         </div>
     </div>
@@ -98,8 +126,6 @@
             API_KEY: 'AIzaSyAjrenW2w8HE9OSHHGwbM3fz-rHQmNjPsQ',
             
             // Add your YouTube channels here
-            // You can find channel IDs by going to a YouTube channel and looking at the URL
-            // or by using: https://www.youtube.com/account_advanced
             CHANNELS: [
                 {
                     name: 'Getting Hammered in Ktown',
@@ -126,11 +152,13 @@
                     channelId: 'UCCthUTu3FC2qeKii4Jyme1Q',
                     color: 'bg-yellow-500'
                 }
-                // Add more friends as needed
             ],
             
             // Update interval in milliseconds (30 seconds = 30000)
-            UPDATE_INTERVAL: 30000
+            UPDATE_INTERVAL: 30000,
+            
+            // Target subscriber count for the race
+            TARGET_SUBS: 1000
         };
 
         // ========================================
@@ -142,6 +170,8 @@
                 this.lastUpdate = null;
                 this.updateTimer = null;
                 this.isLoading = false;
+                this.charts = new Map();
+                this.historicalData = this.loadHistoricalData();
                 
                 this.init();
             }
@@ -177,6 +207,10 @@
                     this.fetchData();
                 });
                 
+                document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+                    this.clearHistory();
+                });
+                
                 document.getElementById('autoRefresh').addEventListener('change', (e) => {
                     if (e.target.checked) {
                         this.startAutoRefresh();
@@ -184,6 +218,54 @@
                         this.stopAutoRefresh();
                     }
                 });
+            }
+            
+            loadHistoricalData() {
+                const saved = JSON.parse(localStorage.getItem('youtubeLeaderboardHistory') || '{}');
+                return saved;
+            }
+            
+            saveHistoricalData() {
+                localStorage.setItem('youtubeLeaderboardHistory', JSON.stringify(this.historicalData));
+            }
+            
+            clearHistory() {
+                if (confirm('Are you sure you want to clear all historical data? This cannot be undone.')) {
+                    this.historicalData = {};
+                    localStorage.removeItem('youtubeLeaderboardHistory');
+                    this.charts.forEach(chart => chart.destroy());
+                    this.charts.clear();
+                    this.fetchData(); // Refresh to rebuild charts
+                }
+            }
+            
+            addHistoricalDataPoint(channelId, subscriberCount) {
+                if (!this.historicalData[channelId]) {
+                    this.historicalData[channelId] = [];
+                }
+                
+                const now = new Date();
+                const dataPoint = {
+                    date: now.toISOString(),
+                    subscribers: subscriberCount,
+                    timestamp: now.getTime()
+                };
+                
+                // Only add if it's different from the last entry or if it's been more than an hour
+                const lastEntry = this.historicalData[channelId][this.historicalData[channelId].length - 1];
+                if (!lastEntry || 
+                    lastEntry.subscribers !== subscriberCount || 
+                    (now.getTime() - new Date(lastEntry.date).getTime()) > 3600000) {
+                    
+                    this.historicalData[channelId].push(dataPoint);
+                    
+                    // Keep only last 30 data points to prevent infinite growth
+                    if (this.historicalData[channelId].length > 30) {
+                        this.historicalData[channelId] = this.historicalData[channelId].slice(-30);
+                    }
+                    
+                    this.saveHistoricalData();
+                }
             }
             
             showLoadingState() {
@@ -201,7 +283,7 @@
                 const card = document.createElement('div');
                 card.className = 'bg-white rounded-xl shadow-md p-6 card-hover';
                 card.innerHTML = `
-                    <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-4 mb-4">
                         <div class="flex-shrink-0 w-12 h-12 bg-gray-300 rounded-full loading-shimmer"></div>
                         <div class="flex-1">
                             <div class="flex items-center justify-between">
@@ -219,6 +301,11 @@
                             <span class="text-white font-bold">${rank}</span>
                         </div>
                     </div>
+                    <div class="space-y-3">
+                        <div class="h-3 bg-gray-200 rounded loading-shimmer w-full"></div>
+                        <div class="h-24 bg-gray-200 rounded loading-shimmer w-full"></div>
+                        <div class="h-16 bg-gray-200 rounded loading-shimmer w-full"></div>
+                    </div>
                 `;
                 return card;
             }
@@ -231,22 +318,45 @@
                 this.updateRefreshButton(true);
                 
                 try {
+                    // Fetch channel statistics
                     const channelIds = CONFIG.CHANNELS.map(channel => channel.channelId).join(',');
-                    const response = await fetch(
+                    const channelsResponse = await fetch(
                         `https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelIds}&key=${CONFIG.API_KEY}`
                     );
                     
-                    if (!response.ok) {
-                        throw new Error(`API Error: ${response.status} - ${response.statusText}`);
+                    if (!channelsResponse.ok) {
+                        throw new Error(`API Error: ${channelsResponse.status} - ${channelsResponse.statusText}`);
                     }
                     
-                    const data = await response.json();
+                    const channelsData = await channelsResponse.json();
                     
-                    if (data.error) {
-                        throw new Error(data.error.message);
+                    if (channelsData.error) {
+                        throw new Error(channelsData.error.message);
                     }
                     
-                    this.processData(data.items);
+                    // Fetch latest videos for each channel
+                    const videoPromises = CONFIG.CHANNELS.map(async (channel) => {
+                        try {
+                            const searchResponse = await fetch(
+                                `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.channelId}&maxResults=1&order=date&type=video&key=${CONFIG.API_KEY}`
+                            );
+                            
+                            if (searchResponse.ok) {
+                                const searchData = await searchResponse.json();
+                                return {
+                                    channelId: channel.channelId,
+                                    latestVideo: searchData.items && searchData.items.length > 0 ? searchData.items[0] : null
+                                };
+                            }
+                        } catch (error) {
+                            console.warn(`Failed to fetch latest video for ${channel.name}:`, error);
+                        }
+                        return { channelId: channel.channelId, latestVideo: null };
+                    });
+                    
+                    const videoData = await Promise.all(videoPromises);
+                    
+                    this.processData(channelsData.items, videoData);
                     this.updateLastUpdatedTime();
                     
                 } catch (error) {
@@ -258,17 +368,27 @@
                 }
             }
             
-            processData(channels) {
+            processData(channels, videoData) {
                 // Merge API data with configuration
                 const channelData = CONFIG.CHANNELS.map(configChannel => {
                     const apiData = channels.find(ch => ch.id === configChannel.channelId);
+                    const videoInfo = videoData.find(vd => vd.channelId === configChannel.channelId);
+                    
+                    const subscriberCount = apiData ? parseInt(apiData.statistics.subscriberCount) : 0;
+                    
+                    // Add to historical data
+                    if (apiData) {
+                        this.addHistoricalDataPoint(configChannel.channelId, subscriberCount);
+                    }
+                    
                     return {
                         ...configChannel,
-                        subscriberCount: apiData ? parseInt(apiData.statistics.subscriberCount) : 0,
+                        subscriberCount,
                         profileImage: apiData ? apiData.snippet.thumbnails.default.url : null,
                         channelTitle: apiData ? apiData.snippet.title : configChannel.name,
                         channelUrl: `https://www.youtube.com/channel/${configChannel.channelId}`,
-                        hasData: !!apiData
+                        hasData: !!apiData,
+                        latestVideo: videoInfo ? videoInfo.latestVideo : null
                     };
                 });
                 
@@ -303,8 +423,12 @@
                     this.formatNumber(channel.subscriberCount) : 
                     'No data';
                 
+                const subsToTarget = Math.max(0, CONFIG.TARGET_SUBS - channel.subscriberCount);
+                const progressPercent = Math.min(100, (channel.subscriberCount / CONFIG.TARGET_SUBS) * 100);
+                const isComplete = channel.subscriberCount >= CONFIG.TARGET_SUBS;
+                
                 card.innerHTML = `
-                    <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-4 mb-4">
                         <div class="flex-shrink-0">
                             ${channel.profileImage ? 
                                 `<img src="${channel.profileImage}" alt="${channel.name}" class="w-12 h-12 rounded-full">` :
@@ -338,10 +462,160 @@
                             </div>
                         </div>
                     </div>
+                    
+                    <!-- Race to 1K Progress -->
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm font-medium text-gray-700">Race to ${CONFIG.TARGET_SUBS}</span>
+                            <span class="text-sm text-gray-600">
+                                ${isComplete ? 
+                                    '🎉 Target Reached!' : 
+                                    `${subsToTarget} more needed`
+                                }
+                            </span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                            <div class="progress-bar h-2.5 rounded-full ${isComplete ? 'bg-green-500' : 'bg-blue-600'}" 
+                                 style="width: ${progressPercent}%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Growth Chart -->
+                    <div class="mb-4">
+                        <h4 class="text-sm font-medium text-gray-700 mb-2">Growth History</h4>
+                        <div class="chart-container">
+                            <canvas id="chart-${channel.channelId}"></canvas>
+                        </div>
+                    </div>
+                    
+                    <!-- Latest Video -->
+                    ${channel.latestVideo ? `
+                        <div class="border-t pt-4">
+                            <h4 class="text-sm font-medium text-gray-700 mb-2">Latest Video</h4>
+                            <a href="https://www.youtube.com/watch?v=${channel.latestVideo.id.videoId}" 
+                               target="_blank" rel="noopener noreferrer"
+                               class="flex items-start space-x-3 hover:bg-gray-50 rounded-lg p-2 transition-colors">
+                                <img src="${channel.latestVideo.snippet.thumbnails.default.url}" 
+                                     alt="${channel.latestVideo.snippet.title}" 
+                                     class="w-16 h-12 rounded object-cover video-thumbnail flex-shrink-0">
+                                <div class="flex-1 min-w-0">
+                                    <p class="text-sm font-medium text-gray-900 line-clamp-2 mb-1">
+                                        ${channel.latestVideo.snippet.title}
+                                    </p>
+                                    <p class="text-xs text-gray-500">
+                                        ${this.formatDate(channel.latestVideo.snippet.publishedAt)}
+                                    </p>
+                                </div>
+                            </a>
+                        </div>
+                    ` : `
+                        <div class="border-t pt-4">
+                            <p class="text-sm text-gray-500">No recent videos found</p>
+                        </div>
+                    `}
+                    
                     ${rank === 1 ? '<div class="mt-4 text-center text-yellow-600 font-semibold">👑 Current Leader!</div>' : ''}
                 `;
                 
+                // Create chart after card is added to DOM
+                setTimeout(() => {
+                    this.createChart(channel.channelId);
+                }, 100);
+                
                 return card;
+            }
+            
+            createChart(channelId) {
+                const canvas = document.getElementById(`chart-${channelId}`);
+                if (!canvas) return;
+                
+                // Destroy existing chart if it exists
+                if (this.charts.has(channelId)) {
+                    this.charts.get(channelId).destroy();
+                }
+                
+                const historicalData = this.historicalData[channelId] || [];
+                
+                if (historicalData.length === 0) {
+                    // Show "No data yet" message
+                    const ctx = canvas.getContext('2d');
+                    ctx.font = '14px Inter';
+                    ctx.fillStyle = '#9CA3AF';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('No historical data yet', canvas.width / 2, canvas.height / 2);
+                    return;
+                }
+                
+                const labels = historicalData.map(point => {
+                    const date = new Date(point.date);
+                    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                });
+                
+                const data = historicalData.map(point => point.subscribers);
+                
+                const ctx = canvas.getContext('2d');
+                const chart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: data,
+                            borderColor: '#3B82F6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4,
+                            pointBackgroundColor: '#3B82F6',
+                            pointBorderColor: '#ffffff',
+                            pointBorderWidth: 2,
+                            pointRadius: 3,
+                            pointHoverRadius: 5
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            x: {
+                                display: true,
+                                grid: {
+                                    display: false
+                                },
+                                ticks: {
+                                    font: {
+                                        size: 10
+                                    },
+                                    maxTicksLimit: 5
+                                }
+                            },
+                            y: {
+                                display: true,
+                                grid: {
+                                    color: 'rgba(0, 0, 0, 0.05)'
+                                },
+                                ticks: {
+                                    font: {
+                                        size: 10
+                                    },
+                                    callback: function(value) {
+                                        return value >= 1000 ? (value/1000).toFixed(1) + 'K' : value;
+                                    }
+                                }
+                            }
+                        },
+                        interaction: {
+                            intersect: false,
+                            mode: 'index'
+                        }
+                    }
+                });
+                
+                this.charts.set(channelId, chart);
             }
             
             formatNumber(num) {
@@ -351,6 +625,23 @@
                     return (num / 1000).toFixed(1) + 'K';
                 }
                 return num.toLocaleString();
+            }
+            
+            formatDate(dateString) {
+                const date = new Date(dateString);
+                const now = new Date();
+                const diffTime = Math.abs(now - date);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                
+                if (diffDays === 1) {
+                    return 'Yesterday';
+                } else if (diffDays < 7) {
+                    return `${diffDays} days ago`;
+                } else if (diffDays < 30) {
+                    return `${Math.floor(diffDays / 7)} weeks ago`;
+                } else {
+                    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                }
             }
             
             updateLastUpdatedTime() {
